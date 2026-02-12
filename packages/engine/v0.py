@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from statistics import pstdev
-from typing import Any
-
-import csv
+from typing import Any, Literal
 
 from .universe import select_representative_etfs
 
@@ -20,6 +19,10 @@ TARGET_BLEND_WEIGHT_HISTORY = 0.6
 TARGET_BLEND_WEIGHT_USER = 0.4
 DEFAULT_FEE_ANNUAL = 0.004
 DEFAULT_INFLATION = 0.025
+DEFAULT_WITHDRAWAL_MODE: Literal["target_years", "fixed_monthly"] = "target_years"
+DEFAULT_TARGET_YEARS = 20
+DEFAULT_RETIREMENT_RETURN_HAIRCUT_PCT = 1.0
+DEFAULT_RETIREMENT_FEE_ANNUAL = 0.004
 
 EQUITY_PRIORITY = ["SPY", "VOO", "IVV", "VTI", "QQQ", "IWM", "EFA", "EEM"]
 BOND_PRIORITY = ["IEF", "VGSH", "SHY", "BIL", "TLT", "AGG", "LQD"]
@@ -59,6 +62,11 @@ class EngineInput:
     current_age: int | None = None
     fee_annual: float = DEFAULT_FEE_ANNUAL
     inflation: float = DEFAULT_INFLATION
+    withdrawal_mode: Literal["target_years", "fixed_monthly"] = DEFAULT_WITHDRAWAL_MODE
+    target_years: int = DEFAULT_TARGET_YEARS
+    fixed_monthly_withdrawal_krw: float | None = None
+    retirement_return_haircut_pct: float = DEFAULT_RETIREMENT_RETURN_HAIRCUT_PCT
+    retirement_fee_annual: float = DEFAULT_RETIREMENT_FEE_ANNUAL
 
 
 def _parse_date(iso_date: str) -> date:
@@ -78,6 +86,17 @@ def _month_ends_between(start: date, end: date) -> list[date]:
             months.append(month_end)
         y, m = next_month_start.year, next_month_start.month
     return months
+
+
+def _future_month_ends(start: date, months: int) -> list[date]:
+    out: list[date] = []
+    y, m = start.year, start.month
+    for _ in range(months):
+        next_month_start = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+        month_end = date.fromordinal(next_month_start.toordinal() - 1)
+        out.append(month_end)
+        y, m = next_month_start.year, next_month_start.month
+    return out
 
 
 def _resolve_retirement_date(input_data: EngineInput, warnings: list[str]) -> date:
@@ -132,16 +151,13 @@ def _load_returns(path: Path = RETURNS_PATH) -> dict[str, list[tuple[str, float]
 def _load_enriched_universe_rows() -> list[dict[str, str]]:
     if not UNIVERSE_ENRICHED_PATH.exists():
         return []
-
     with UNIVERSE_ENRICHED_PATH.open("r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
 def _pick_assets(returns_by_ticker: dict[str, list[tuple[str, float]]], warnings: list[str]) -> dict[str, list[str]]:
     return_universe = set(returns_by_ticker.keys())
-
-    enriched_rows = _load_enriched_universe_rows()
-    enriched_rows = [row for row in enriched_rows if row.get("ticker") in return_universe]
+    enriched_rows = [row for row in _load_enriched_universe_rows() if row.get("ticker") in return_universe]
 
     equities: list[str] = []
     bonds: list[str] = []
@@ -153,12 +169,10 @@ def _pick_assets(returns_by_ticker: dict[str, list[tuple[str, float]]], warnings
             + select_representative_etfs(enriched_rows, "global_equity", top_k=2)
             + select_representative_etfs(enriched_rows, "korea_equity", top_k=2)
         )
-        seen: set[str] = set()
         for row in equity_rows:
-            ticker = str(row.get("ticker", "")).strip()
-            if ticker and ticker not in seen:
-                seen.add(ticker)
-                equities.append(ticker)
+            t = str(row.get("ticker", "")).strip()
+            if t and t not in equities:
+                equities.append(t)
             if len(equities) >= 2:
                 break
 
@@ -167,12 +181,10 @@ def _pick_assets(returns_by_ticker: dict[str, list[tuple[str, float]]], warnings
             + select_representative_etfs(enriched_rows, "korea_short", top_k=2)
             + select_representative_etfs(enriched_rows, "korea_credit", top_k=2)
         )
-        seen = set()
         for row in bond_rows:
-            ticker = str(row.get("ticker", "")).strip()
-            if ticker and ticker not in seen:
-                seen.add(ticker)
-                bonds.append(ticker)
+            t = str(row.get("ticker", "")).strip()
+            if t and t not in bonds:
+                bonds.append(t)
             if len(bonds) >= 2:
                 break
 
@@ -186,9 +198,8 @@ def _pick_assets(returns_by_ticker: dict[str, list[tuple[str, float]]], warnings
     if not reits:
         reits = [t for t in REIT_PRIORITY if t in return_universe][:1]
 
-    if len(equities) < 1 or len(bonds) < 1:
+    if not equities or not bonds:
         raise ValueError("Not enough ETF coverage in returns data (need >=1 equity and >=1 bond).")
-
     if not reits:
         warnings.append("REIT ETF not available in universe; REIT allocation fixed at 0%.")
 
@@ -227,8 +238,7 @@ def _mdd(monthly_returns: list[float]) -> float:
     for r in monthly_returns:
         wealth *= 1.0 + r
         peak = max(peak, wealth)
-        drawdown = wealth / peak - 1.0
-        worst = min(worst, drawdown)
+        worst = min(worst, wealth / peak - 1.0)
     return abs(worst)
 
 
@@ -238,16 +248,12 @@ def _expand_weights(stock_w: float, bond_w: float, reit_w: float, selected: dict
     bds = selected["bonds"]
     rts = selected["reits"]
 
-    if len(eqs) == 1:
-        out[eqs[0]] = stock_w
-    else:
-        out[eqs[0]] = round(stock_w * 0.6, 10)
+    out[eqs[0]] = stock_w if len(eqs) == 1 else round(stock_w * 0.6, 10)
+    if len(eqs) > 1:
         out[eqs[1]] = round(stock_w * 0.4, 10)
 
-    if len(bds) == 1:
-        out[bds[0]] = bond_w
-    else:
-        out[bds[0]] = round(bond_w * 0.7, 10)
+    out[bds[0]] = bond_w if len(bds) == 1 else round(bond_w * 0.7, 10)
+    if len(bds) > 1:
         out[bds[1]] = round(bond_w * 0.3, 10)
 
     if reit_w > 0 and rts:
@@ -275,7 +281,6 @@ def _optimize(
             bond = 1.0 - stock - reit
             if bond < 0.10:
                 continue
-
             weights = _expand_weights(stock, bond, reit, selected)
             monthly = _portfolio_monthly_returns(weights, returns_by_ticker)
             if len(monthly) < 24:
@@ -292,8 +297,7 @@ def _optimize(
 
     if candidates:
         candidates.sort(key=lambda x: (x[0], x[1], x[2]))
-        _, _, _, weights, metrics = candidates[0]
-        return weights, metrics
+        return candidates[0][3], candidates[0][4]
 
     warnings.append("No portfolio met max_mdd constraint; selected minimum-MDD fallback.")
     fallback: tuple[float, float, dict[str, float], dict[str, float]] | None = None
@@ -302,19 +306,13 @@ def _optimize(
         bond = 1.0 - stock - reit
         if bond < 0.10:
             continue
-
         weights = _expand_weights(stock, bond, reit, selected)
         monthly = _portfolio_monthly_returns(weights, returns_by_ticker)
         if len(monthly) < 24:
             continue
-
         hist_ret = _annualized_return(monthly)
         exp_return = TARGET_BLEND_WEIGHT_HISTORY * hist_ret + TARGET_BLEND_WEIGHT_USER * target_cagr
-        metrics = {
-            "exp_return": exp_return,
-            "vol": _annualized_vol(monthly),
-            "est_mdd": _mdd(monthly),
-        }
+        metrics = {"exp_return": exp_return, "vol": _annualized_vol(monthly), "est_mdd": _mdd(monthly)}
 
         key = (metrics["est_mdd"], metrics["vol"])
         if fallback is None or key < (fallback[0], fallback[1]):
@@ -330,10 +328,10 @@ def _simulate_accumulation(
     monthly_contribution_krw: float,
     monthly_return: float,
     months: list[date],
-) -> list[dict[str, float | str]]:
+) -> list[dict[str, int | str]]:
     balance = float(current_balance_krw)
     principal = float(current_balance_krw)
-    series: list[dict[str, float | str]] = []
+    series: list[dict[str, int | str]] = []
 
     for month_end in months:
         balance *= 1.0 + monthly_return
@@ -342,12 +340,80 @@ def _simulate_accumulation(
         series.append(
             {
                 "date": month_end.isoformat(),
-                "balance": round(balance, 2),
-                "principal": round(principal, 2),
-                "gain": round(balance - principal, 2),
+                "balance": int(round(balance)),
+                "principal": int(round(principal)),
+                "gain": int(round(balance - principal)),
             }
         )
     return series
+
+
+def _pmt_from_pv(balance: float, rm: float, n_months: int) -> float:
+    if n_months <= 0:
+        return 0.0
+    if abs(rm) < 1e-9:
+        return balance / n_months
+    discount = (1.0 - (1.0 + rm) ** (-n_months)) / rm
+    if abs(discount) < 1e-12:
+        return balance / n_months
+    return balance / discount
+
+
+def _simulate_retirement(
+    start_balance: float,
+    start_date: date,
+    exp_return_annual: float,
+    input_data: EngineInput,
+    warnings: list[str],
+) -> tuple[list[dict[str, int | str]], dict[str, int]]:
+    annual_net = exp_return_annual - (input_data.retirement_return_haircut_pct / 100.0) - input_data.retirement_fee_annual
+    rm = (1.0 + annual_net) ** (1.0 / 12.0) - 1.0 if annual_net > -0.999999 else -0.99
+
+    if input_data.withdrawal_mode == "target_years":
+        months = max(1, int(input_data.target_years) * 12)
+        monthly_withdrawal = _pmt_from_pv(start_balance, rm, months)
+        if monthly_withdrawal > start_balance * 0.05:
+            warnings.append("Calculated withdrawal exceeds 5% of retirement starting balance per month.")
+        sim_months = _future_month_ends(start_date, months)
+    elif input_data.withdrawal_mode == "fixed_monthly":
+        if input_data.fixed_monthly_withdrawal_krw is None or input_data.fixed_monthly_withdrawal_krw <= 0:
+            raise ValueError("fixed_monthly_withdrawal_krw is required and must be positive for fixed_monthly mode")
+        monthly_withdrawal = float(input_data.fixed_monthly_withdrawal_krw)
+        sim_months = _future_month_ends(start_date, 1200)
+    else:
+        raise ValueError("withdrawal_mode must be 'target_years' or 'fixed_monthly'")
+
+    series: list[dict[str, int | str]] = []
+    balance = float(start_balance)
+    principal_ref = float(start_balance)
+
+    for idx, d in enumerate(sim_months, start=1):
+        balance *= 1.0 + rm
+        withdrawal = min(monthly_withdrawal, balance)
+        balance -= withdrawal
+        gain = balance - principal_ref
+        series.append(
+            {
+                "date": d.isoformat(),
+                "balance": int(round(max(balance, 0.0))),
+                "withdrawal": int(round(withdrawal)),
+                "gain": int(round(gain)),
+            }
+        )
+        if balance <= 0:
+            if input_data.withdrawal_mode == "fixed_monthly" and idx <= 12:
+                warnings.append("Withdrawal is too high: portfolio depletes within 12 months after retirement.")
+            break
+
+    duration_months = len(series)
+    end_balance = int(round(series[-1]["balance"])) if series else int(round(start_balance))
+    summary = {
+        "start_balance_at_retirement": int(round(start_balance)),
+        "monthly_withdrawal": int(round(monthly_withdrawal)),
+        "duration_months": int(duration_months),
+        "end_balance": max(0, int(round(end_balance))),
+    }
+    return series, summary
 
 
 def run_engine_v0(input_data: EngineInput, returns_by_ticker: dict[str, list[tuple[str, float]]] | None = None) -> dict[str, Any]:
@@ -372,12 +438,20 @@ def run_engine_v0(input_data: EngineInput, returns_by_ticker: dict[str, list[tup
             warnings.append("Expected real monthly return is non-positive after inflation.")
 
     retirement = _resolve_retirement_date(input_data, warnings)
-    months = _month_ends_between(_parse_date(input_data.start_date), retirement)
     accumulation = _simulate_accumulation(
         input_data.current_balance_krw,
         input_data.monthly_contribution_krw,
         monthly_net_return,
-        months,
+        _month_ends_between(_parse_date(input_data.start_date), retirement),
+    )
+
+    retirement_start_balance = accumulation[-1]["balance"] if accumulation else int(round(input_data.current_balance_krw))
+    retirement_series, retirement_summary = _simulate_retirement(
+        start_balance=retirement_start_balance,
+        start_date=retirement,
+        exp_return_annual=metrics["exp_return"],
+        input_data=input_data,
+        warnings=warnings,
     )
 
     portfolio = [
@@ -392,6 +466,8 @@ def run_engine_v0(input_data: EngineInput, returns_by_ticker: dict[str, list[tup
             "est_mdd": round(metrics["est_mdd"], 6),
         },
         "accumulation_series": accumulation,
+        "retirement_series": retirement_series,
+        "retirement_summary": retirement_summary,
         "warnings": warnings,
     }
     json.dumps(result, ensure_ascii=False)

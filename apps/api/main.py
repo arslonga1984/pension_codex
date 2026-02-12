@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -26,10 +27,18 @@ class RecommendRequest(BaseModel):
     inflation: float = Field(default=0.025, ge=0)
     current_age: int | None = Field(default=None, ge=0)
 
+    withdrawal_mode: Literal["target_years", "fixed_monthly"] = "target_years"
+    target_years: int = Field(default=20, ge=1)
+    fixed_monthly_withdrawal_krw: float | None = Field(default=None, ge=0)
+    retirement_return_haircut_pct: float = Field(default=1.0, ge=0)
+    retirement_fee_annual: float = Field(default=0.004, ge=0)
+
     @model_validator(mode="after")
-    def validate_retirement_rule(self) -> "RecommendRequest":
+    def validate_rules(self) -> "RecommendRequest":
         if self.retirement_age is None and self.retirement_date is None:
             raise ValueError("Either retirement_age (>=55) or retirement_date must be provided.")
+        if self.withdrawal_mode == "fixed_monthly" and not self.fixed_monthly_withdrawal_krw:
+            raise ValueError("fixed_monthly_withdrawal_krw is required when withdrawal_mode=fixed_monthly")
         return self
 
 
@@ -40,8 +49,9 @@ def _missing_data_error(missing_paths: list[Path]) -> HTTPException:
         "missing_files": missing,
         "install_guide": [
             "1) 유니버스 파일 준비: data/universe.csv (ticker 컬럼 포함)",
-            "2) 월 수익률 생성: python -m packages.data.build_returns",
-            "3) 생성 확인: data/returns_monthly.parquet 존재 여부 확인",
+            "2) 자산군 보강: python -m packages.data.enrich_universe",
+            "3) 월 수익률 생성: python -m packages.data.build_returns",
+            "4) 생성 확인: data/returns_monthly.parquet 존재 여부 확인",
         ],
     }
     return HTTPException(status_code=503, detail=detail)
@@ -70,6 +80,11 @@ def recommend(request: RecommendRequest) -> dict:
             max_mdd=request.max_mdd,
             fee_annual=request.fee_annual,
             inflation=request.inflation,
+            withdrawal_mode=request.withdrawal_mode,
+            target_years=request.target_years,
+            fixed_monthly_withdrawal_krw=request.fixed_monthly_withdrawal_krw,
+            retirement_return_haircut_pct=request.retirement_return_haircut_pct,
+            retirement_fee_annual=request.retirement_fee_annual,
         )
         return run_engine_v0(engine_input)
     except FileNotFoundError as exc:
@@ -84,6 +99,7 @@ def recommend(request: RecommendRequest) -> dict:
                     "message": "필수 의존성 누락: pandas",
                     "install_guide": [
                         "python -m pip install pandas pyarrow",
+                        "python -m packages.data.enrich_universe",
                         "python -m packages.data.build_returns",
                     ],
                 },

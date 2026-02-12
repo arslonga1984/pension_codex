@@ -10,93 +10,65 @@
     <main class="container">
       <header>
         <h1>Pension Codex MVP</h1>
-        <p>은퇴 포트폴리오 추천과 적립금 시뮬레이션</p>
+        <p>은퇴 포트폴리오 추천 + 적립/인출 시뮬레이션</p>
       </header>
 
       <section class="card">
         <h2>입력</h2>
         <form id="recommend-form" class="form-grid">
-          <label>현재자산 (KRW)
-            <input type="number" name="current_balance_krw" min="0" required />
-          </label>
-          <label>월 불입액 (KRW)
-            <input type="number" name="monthly_contribution_krw" min="0" required />
-          </label>
-          <label>시작일
-            <input type="date" name="start_date" required />
-          </label>
-          <label>은퇴일 (선택)
-            <input type="date" name="retirement_date" />
-          </label>
-          <label>은퇴나이 (선택, 55+)
-            <input type="number" name="retirement_age" min="55" />
-          </label>
-          <label>현재나이 (선택)
-            <input type="number" name="current_age" min="0" />
-          </label>
-          <label>목표 수익률 (CAGR %)
-            <input type="number" step="0.1" name="target_cagr" required />
-          </label>
-          <label>허용 MDD (%)
-            <input type="number" step="0.1" min="0.1" max="99.9" name="max_mdd" required />
-          </label>
-          <label>연 수수료 (기본 0.4%)
-            <input type="number" step="0.0001" name="fee_annual" value="0.004" />
-          </label>
-          <label>인플레이션 (기본 2.5%)
-            <input type="number" step="0.0001" name="inflation" value="0.025" />
-          </label>
+          <label>현재자산 (KRW)<input type="number" name="current_balance_krw" min="0" required /></label>
+          <label>월 불입액 (KRW)<input type="number" name="monthly_contribution_krw" min="0" required /></label>
+          <label>시작일<input type="date" name="start_date" required /></label>
+          <label>은퇴일 (선택)<input type="date" name="retirement_date" /></label>
+          <label>은퇴나이 (선택, 55+)<input type="number" name="retirement_age" min="55" /></label>
+          <label>현재나이 (선택)<input type="number" name="current_age" min="0" /></label>
+          <label>목표 수익률 (CAGR %)<input type="number" step="0.1" name="target_cagr" required /></label>
+          <label>허용 MDD (%)<input type="number" step="0.1" min="0.1" max="99.9" name="max_mdd" required /></label>
+          <label>연 수수료 (적립기)<input type="number" step="0.0001" name="fee_annual" value="0.004" /></label>
+          <label>인플레이션<input type="number" step="0.0001" name="inflation" value="0.025" /></label>
+          <label>은퇴후 기대수익 헤어컷 (%p)<input type="number" step="0.1" name="retirement_return_haircut_pct" value="1.0" /></label>
+          <label>은퇴후 연 수수료<input type="number" step="0.0001" name="retirement_fee_annual" value="0.004" /></label>
 
-          <div class="form-actions">
-            <button type="submit" id="submit-btn">추천 받기</button>
-          </div>
+          <fieldset class="withdrawal-box">
+            <legend>은퇴 후 수령 방식</legend>
+            <label><input type="radio" name="withdrawal_mode" value="target_years" checked /> 20년 받기(기본)</label>
+            <label><input type="radio" name="withdrawal_mode" value="fixed_monthly" /> 매달 X원 받기</label>
+            <label id="target-years-wrap">목표 수령 기간(년)<input type="number" name="target_years" min="1" value="20" /></label>
+            <label id="fixed-withdraw-wrap" class="hidden">매달 수령액 (KRW)<input type="number" name="fixed_monthly_withdrawal_krw" min="1" /></label>
+          </fieldset>
+
+          <div class="form-actions"><button type="submit" id="submit-btn">추천 받기</button></div>
         </form>
         <p id="status" class="status"></p>
       </section>
 
       <section id="results" class="hidden">
         <div class="kpi-grid">
-          <article class="card kpi">
-            <h3>은퇴시점 예상자산</h3>
-            <strong id="kpi-balance">-</strong>
-          </article>
-          <article class="card kpi">
-            <h3>총 납입원금</h3>
-            <strong id="kpi-principal">-</strong>
-          </article>
-          <article class="card kpi">
-            <h3>누적수익</h3>
-            <strong id="kpi-gain">-</strong>
-          </article>
-          <article class="card kpi">
-            <h3>추정 MDD</h3>
-            <strong id="kpi-mdd">-</strong>
-          </article>
+          <article class="card kpi"><h3>은퇴시점 예상자산</h3><strong id="kpi-balance">-</strong></article>
+          <article class="card kpi"><h3>총 납입원금</h3><strong id="kpi-principal">-</strong></article>
+          <article class="card kpi"><h3>누적수익</h3><strong id="kpi-gain">-</strong></article>
+          <article class="card kpi"><h3>추정 MDD</h3><strong id="kpi-mdd">-</strong></article>
+          <article class="card kpi"><h3>월 수령액</h3><strong id="kpi-withdrawal">-</strong></article>
+          <article class="card kpi"><h3>예상 수령 기간</h3><strong id="kpi-duration">-</strong></article>
         </div>
 
         <article class="card">
           <h2>추천 포트폴리오</h2>
           <table>
-            <thead>
-              <tr>
-                <th>Ticker</th>
-                <th>Name</th>
-                <th>Weight</th>
-              </tr>
-            </thead>
+            <thead><tr><th>Ticker</th><th>Name</th><th>Weight</th></tr></thead>
             <tbody id="portfolio-body"></tbody>
           </table>
         </article>
 
+        <article class="card">
+          <h2>경고 및 힌트</h2>
+          <ul id="warnings-list" class="warnings-list"></ul>
+        </article>
+
         <div class="chart-grid">
-          <article class="card">
-            <h2>원금 vs 수익 (Stack Area)</h2>
-            <canvas id="stacked-chart" width="800" height="320"></canvas>
-          </article>
-          <article class="card">
-            <h2>잔고 추이 (Line)</h2>
-            <canvas id="balance-chart" width="800" height="320"></canvas>
-          </article>
+          <article class="card"><h2>원금 vs 수익 (Stack Area)</h2><canvas id="stacked-chart" width="800" height="320"></canvas></article>
+          <article class="card"><h2>잔고 추이 (적립기)</h2><canvas id="balance-chart" width="800" height="320"></canvas></article>
+          <article class="card full"><h2>은퇴 후 잔고/인출 추이</h2><canvas id="retirement-chart" width="800" height="320"></canvas></article>
         </div>
       </section>
     </main>

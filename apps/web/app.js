@@ -16,33 +16,32 @@ function setStatus(message, isError = false) {
   statusEl.classList.toggle("error", isError);
 }
 
+function updateWithdrawalModeUI() {
+  const mode = form.elements.namedItem("withdrawal_mode").value;
+  document.getElementById("fixed-withdraw-wrap").classList.toggle("hidden", mode !== "fixed_monthly");
+  document.getElementById("target-years-wrap").classList.toggle("hidden", mode !== "target_years");
+}
+
 function serializeForm() {
   const fd = new FormData(form);
   const payload = Object.fromEntries(fd.entries());
-
   const numberFields = [
-    "current_balance_krw",
-    "monthly_contribution_krw",
-    "retirement_age",
-    "current_age",
-    "target_cagr",
-    "max_mdd",
-    "fee_annual",
-    "inflation",
+    "current_balance_krw", "monthly_contribution_krw", "retirement_age", "current_age",
+    "target_cagr", "max_mdd", "fee_annual", "inflation", "target_years",
+    "fixed_monthly_withdrawal_krw", "retirement_return_haircut_pct", "retirement_fee_annual",
   ];
 
   for (const key of numberFields) {
-    if (payload[key] === "" || payload[key] == null) {
-      delete payload[key];
-    } else {
-      payload[key] = Number(payload[key]);
-    }
+    if (payload[key] === "" || payload[key] == null) delete payload[key];
+    else payload[key] = Number(payload[key]);
   }
 
   if (!payload.retirement_date) delete payload.retirement_date;
-  if (!payload.retirement_age && !payload.retirement_date) {
-    throw new Error("은퇴일 또는 은퇴나이 중 하나는 입력해야 합니다.");
+  if (!payload.retirement_age && !payload.retirement_date) throw new Error("은퇴일 또는 은퇴나이 중 하나는 입력해야 합니다.");
+  if (payload.withdrawal_mode === "fixed_monthly" && !payload.fixed_monthly_withdrawal_krw) {
+    throw new Error("매달 수령액을 입력하세요.");
   }
+  if (payload.withdrawal_mode === "target_years" && !payload.target_years) payload.target_years = 20;
 
   return payload;
 }
@@ -53,7 +52,13 @@ function populateFromStorage() {
   const saved = JSON.parse(raw);
   for (const [k, v] of Object.entries(saved)) {
     const el = form.elements.namedItem(k);
-    if (el && v !== null && v !== undefined) el.value = v;
+    if (!el || v == null) continue;
+    if (el instanceof RadioNodeList) {
+      const target = form.querySelector(`input[name="${k}"][value="${v}"]`);
+      if (target) target.checked = true;
+    } else {
+      el.value = v;
+    }
   }
 }
 
@@ -62,10 +67,7 @@ function drawLine(ctx, points, color) {
   ctx.beginPath();
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
-  points.forEach((p, idx) => {
-    if (idx === 0) ctx.moveTo(p.x, p.y);
-    else ctx.lineTo(p.x, p.y);
-  });
+  points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
   ctx.stroke();
 }
 
@@ -80,32 +82,42 @@ function drawArea(ctx, points, baselineY, fillColor) {
   ctx.fill();
 }
 
-function renderCharts(series) {
-  const stacked = document.getElementById("stacked-chart");
-  const balance = document.getElementById("balance-chart");
-  const sctx = stacked.getContext("2d");
-  const bctx = balance.getContext("2d");
+function renderChart(canvasId, seriesA, keyA, colorA, seriesB = null, keyB = null, colorB = "#f79009", area = false) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!seriesA.length) return;
 
-  sctx.clearRect(0, 0, stacked.width, stacked.height);
-  bctx.clearRect(0, 0, balance.width, balance.height);
-
-  if (!series.length) return;
-
-  const maxValue = Math.max(...series.map((d) => d.balance), 1);
-  const toPoint = (i, value, canvas) => ({
-    x: 40 + (i * (canvas.width - 60)) / Math.max(1, series.length - 1),
+  const allVals = [...seriesA.map((d) => d[keyA]), ...(seriesB ? seriesB.map((d) => d[keyB]) : [])];
+  const maxValue = Math.max(...allVals, 1);
+  const toPoint = (i, value) => ({
+    x: 40 + (i * (canvas.width - 60)) / Math.max(1, seriesA.length - 1),
     y: canvas.height - 30 - ((canvas.height - 50) * value) / maxValue,
   });
 
-  const principalPts = series.map((d, i) => toPoint(i, d.principal, stacked));
-  const balancePts = series.map((d, i) => toPoint(i, d.balance, stacked));
-  drawArea(sctx, principalPts, stacked.height - 30, "rgba(21,94,239,0.25)");
-  drawArea(sctx, balancePts, stacked.height - 30, "rgba(18,183,106,0.25)");
-  drawLine(sctx, principalPts, "#155eef");
-  drawLine(sctx, balancePts, "#12b76a");
+  const pointsA = seriesA.map((d, i) => toPoint(i, d[keyA]));
+  if (area) drawArea(ctx, pointsA, canvas.height - 30, "rgba(21,94,239,0.20)");
+  drawLine(ctx, pointsA, colorA);
 
-  const linePts = series.map((d, i) => toPoint(i, d.balance, balance));
-  drawLine(bctx, linePts, "#7a5af8");
+  if (seriesB && keyB) {
+    const pointsB = seriesB.map((d, i) => toPoint(i, d[keyB]));
+    drawLine(ctx, pointsB, colorB);
+  }
+}
+
+function renderWarnings(warnings) {
+  const ul = document.getElementById("warnings-list");
+  ul.innerHTML = "";
+  const list = warnings && warnings.length ? warnings : ["경고 없음"];
+  list.forEach((w) => {
+    const li = document.createElement("li");
+    li.textContent = w;
+    if (w !== "경고 없음") {
+      if (w.includes("depletes") || w.includes("소진")) li.textContent += " (힌트: 월 수령액을 낮추거나 목표 기간을 줄이세요)";
+      if (w.includes("5%")) li.textContent += " (힌트: 목표 수령기간을 늘리거나 위험/수익 목표를 조정하세요)";
+    }
+    ul.appendChild(li);
+  });
 }
 
 function renderResult(result) {
@@ -117,6 +129,12 @@ function renderResult(result) {
   document.getElementById("kpi-gain").textContent = fmtKrw(last.gain);
   document.getElementById("kpi-mdd").textContent = `${(result.metrics.est_mdd * 100).toFixed(2)}%`;
 
+  const rs = result.retirement_summary || { monthly_withdrawal: 0, duration_months: 0 };
+  document.getElementById("kpi-withdrawal").textContent = fmtKrw(rs.monthly_withdrawal || 0);
+  const years = Math.floor((rs.duration_months || 0) / 12);
+  const months = (rs.duration_months || 0) % 12;
+  document.getElementById("kpi-duration").textContent = `${years}년 ${months}개월`;
+
   const tbody = document.getElementById("portfolio-body");
   tbody.innerHTML = "";
   result.portfolio.forEach((row) => {
@@ -125,7 +143,10 @@ function renderResult(result) {
     tbody.appendChild(tr);
   });
 
-  renderCharts(result.accumulation_series || []);
+  renderWarnings(result.warnings || []);
+  renderChart("stacked-chart", result.accumulation_series || [], "balance", "#12b76a", result.accumulation_series || [], "principal", "#155eef", true);
+  renderChart("balance-chart", result.accumulation_series || [], "balance", "#7a5af8");
+  renderChart("retirement-chart", result.retirement_series || [], "balance", "#12b76a", result.retirement_series || [], "withdrawal", "#f79009");
 }
 
 async function callRecommend(payload) {
@@ -134,12 +155,8 @@ async function callRecommend(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-
   const body = await response.json();
-  if (!response.ok) {
-    const msg = body?.detail?.message || body?.message || JSON.stringify(body);
-    throw new Error(msg);
-  }
+  if (!response.ok) throw new Error(body?.detail?.message || body?.message || JSON.stringify(body));
   return body;
 }
 
@@ -162,12 +179,10 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+form.querySelectorAll('input[name="withdrawal_mode"]').forEach((el) => el.addEventListener("change", updateWithdrawalModeUI));
 populateFromStorage();
+updateWithdrawalModeUI();
 const cachedResult = localStorage.getItem(RESULT_KEY);
 if (cachedResult) {
-  try {
-    renderResult(JSON.parse(cachedResult));
-  } catch (_) {
-    localStorage.removeItem(RESULT_KEY);
-  }
+  try { renderResult(JSON.parse(cachedResult)); } catch (_) { localStorage.removeItem(RESULT_KEY); }
 }
