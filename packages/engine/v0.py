@@ -8,8 +8,13 @@ from pathlib import Path
 from statistics import pstdev
 from typing import Any
 
+import csv
+
+from .universe import select_representative_etfs
+
 ROOT = Path(__file__).resolve().parents[2]
 RETURNS_PATH = ROOT / "data" / "returns_monthly.parquet"
+UNIVERSE_ENRICHED_PATH = ROOT / "data" / "universe_enriched.csv"
 
 TARGET_BLEND_WEIGHT_HISTORY = 0.6
 TARGET_BLEND_WEIGHT_USER = 0.4
@@ -124,11 +129,62 @@ def _load_returns(path: Path = RETURNS_PATH) -> dict[str, list[tuple[str, float]
     return grouped
 
 
+def _load_enriched_universe_rows() -> list[dict[str, str]]:
+    if not UNIVERSE_ENRICHED_PATH.exists():
+        return []
+
+    with UNIVERSE_ENRICHED_PATH.open("r", encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
 def _pick_assets(returns_by_ticker: dict[str, list[tuple[str, float]]], warnings: list[str]) -> dict[str, list[str]]:
-    universe = set(returns_by_ticker.keys())
-    equities = [t for t in EQUITY_PRIORITY if t in universe][:2]
-    bonds = [t for t in BOND_PRIORITY if t in universe][:2]
-    reits = [t for t in REIT_PRIORITY if t in universe][:1]
+    return_universe = set(returns_by_ticker.keys())
+
+    enriched_rows = _load_enriched_universe_rows()
+    enriched_rows = [row for row in enriched_rows if row.get("ticker") in return_universe]
+
+    equities: list[str] = []
+    bonds: list[str] = []
+    reits: list[str] = []
+
+    if enriched_rows:
+        equity_rows = (
+            select_representative_etfs(enriched_rows, "us_equity", top_k=2)
+            + select_representative_etfs(enriched_rows, "global_equity", top_k=2)
+            + select_representative_etfs(enriched_rows, "korea_equity", top_k=2)
+        )
+        seen: set[str] = set()
+        for row in equity_rows:
+            ticker = str(row.get("ticker", "")).strip()
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                equities.append(ticker)
+            if len(equities) >= 2:
+                break
+
+        bond_rows = (
+            select_representative_etfs(enriched_rows, "korea_treasury", top_k=2)
+            + select_representative_etfs(enriched_rows, "korea_short", top_k=2)
+            + select_representative_etfs(enriched_rows, "korea_credit", top_k=2)
+        )
+        seen = set()
+        for row in bond_rows:
+            ticker = str(row.get("ticker", "")).strip()
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                bonds.append(ticker)
+            if len(bonds) >= 2:
+                break
+
+        reit_rows = select_representative_etfs(enriched_rows, "reits", top_k=1)
+        reits = [str(row.get("ticker", "")).strip() for row in reit_rows if str(row.get("ticker", "")).strip()]
+
+    if not equities:
+        equities = [t for t in EQUITY_PRIORITY if t in return_universe][:2]
+    if not bonds:
+        bonds = [t for t in BOND_PRIORITY if t in return_universe][:2]
+    if not reits:
+        reits = [t for t in REIT_PRIORITY if t in return_universe][:1]
 
     if len(equities) < 1 or len(bonds) < 1:
         raise ValueError("Not enough ETF coverage in returns data (need >=1 equity and >=1 bond).")

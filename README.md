@@ -70,3 +70,31 @@ python -m http.server 4173 --directory apps/web
 ```bash
 python -m packages.data.build_returns
 ```
+
+## 유니버스 구축/보강 후 엔진 사용
+
+1. 유니버스 준비 (`data/universe.csv`)
+
+- 권장 컬럼: `ticker,name_kr,aum_krw,expense_ratio`
+- 최소 `ticker`만 있어도 동작하지만, `name_kr/aum_krw`가 있으면 자산군 분류와 대표 ETF 선택이 더 안정적입니다.
+
+2. 자산군 보강 실행
+
+```bash
+python -m packages.data.enrich_universe
+```
+
+- 출력 파일: `data/universe_enriched.csv` (`asset_class` 자동 추가)
+
+3. 월 수익률 생성
+
+```bash
+python -m packages.data.build_returns
+```
+
+4. API/엔진 사용
+
+```bash
+python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+```
+
