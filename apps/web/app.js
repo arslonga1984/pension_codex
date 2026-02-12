@@ -6,6 +6,8 @@ const form = document.getElementById("recommend-form");
 const statusEl = document.getElementById("status");
 const submitBtn = document.getElementById("submit-btn");
 const resultsEl = document.getElementById("results");
+const downloadBtn = document.getElementById("download-report-btn");
+const reportStatusEl = document.getElementById("report-status");
 
 function fmtKrw(value) {
   return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(value || 0);
@@ -14,6 +16,11 @@ function fmtKrw(value) {
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", isError);
+}
+
+function setReportStatus(message, isError = false) {
+  reportStatusEl.textContent = message;
+  reportStatusEl.classList.toggle("error", isError);
 }
 
 function updateWithdrawalModeUI() {
@@ -160,6 +167,35 @@ async function callRecommend(payload) {
   return body;
 }
 
+
+async function downloadReport(payload) {
+  const response = await fetch(`${API_BASE}/report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    let body = {};
+    try { body = await response.json(); } catch (_) {}
+    throw new Error(body?.detail?.message || body?.message || `PDF 생성 실패 (${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  const filename = match ? match[1] : "retirement_etf_report.pdf";
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   setStatus("요청 중...");
@@ -176,6 +212,21 @@ form.addEventListener("submit", async (event) => {
     setStatus(error.message, true);
   } finally {
     submitBtn.disabled = false;
+  }
+});
+
+
+downloadBtn.addEventListener("click", async () => {
+  setReportStatus("PDF 생성 중...");
+  downloadBtn.disabled = true;
+  try {
+    const payload = serializeForm();
+    await downloadReport(payload);
+    setReportStatus("PDF 다운로드를 시작했습니다.");
+  } catch (error) {
+    setReportStatus(error.message, true);
+  } finally {
+    downloadBtn.disabled = false;
   }
 });
 

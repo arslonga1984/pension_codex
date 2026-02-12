@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, model_validator
 
+from apps.api.reporting import build_report_filename, generate_report_pdf
 from packages.engine.v0 import EngineInput, run_engine_v0
 
 app = FastAPI(title="Pension Codex API", version="0.1.0")
@@ -57,6 +58,32 @@ def _missing_data_error(missing_paths: list[Path]) -> HTTPException:
     return HTTPException(status_code=503, detail=detail)
 
 
+def _ensure_data_files() -> None:
+    missing_paths = [path for path in [UNIVERSE_PATH, RETURNS_PATH] if not path.exists()]
+    if missing_paths:
+        raise _missing_data_error(missing_paths)
+
+
+def _build_engine_input(request: RecommendRequest) -> EngineInput:
+    return EngineInput(
+        current_balance_krw=request.current_balance_krw,
+        monthly_contribution_krw=request.monthly_contribution_krw,
+        start_date=request.start_date,
+        retirement_age=request.retirement_age,
+        retirement_date=request.retirement_date,
+        current_age=request.current_age,
+        target_cagr=request.target_cagr,
+        max_mdd=request.max_mdd,
+        fee_annual=request.fee_annual,
+        inflation=request.inflation,
+        withdrawal_mode=request.withdrawal_mode,
+        target_years=request.target_years,
+        fixed_monthly_withdrawal_krw=request.fixed_monthly_withdrawal_krw,
+        retirement_return_haircut_pct=request.retirement_return_haircut_pct,
+        retirement_fee_annual=request.retirement_fee_annual,
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -64,29 +91,9 @@ def health() -> dict[str, str]:
 
 @app.post("/recommend")
 def recommend(request: RecommendRequest) -> dict:
-    missing_paths = [path for path in [UNIVERSE_PATH, RETURNS_PATH] if not path.exists()]
-    if missing_paths:
-        raise _missing_data_error(missing_paths)
-
+    _ensure_data_files()
     try:
-        engine_input = EngineInput(
-            current_balance_krw=request.current_balance_krw,
-            monthly_contribution_krw=request.monthly_contribution_krw,
-            start_date=request.start_date,
-            retirement_age=request.retirement_age,
-            retirement_date=request.retirement_date,
-            current_age=request.current_age,
-            target_cagr=request.target_cagr,
-            max_mdd=request.max_mdd,
-            fee_annual=request.fee_annual,
-            inflation=request.inflation,
-            withdrawal_mode=request.withdrawal_mode,
-            target_years=request.target_years,
-            fixed_monthly_withdrawal_krw=request.fixed_monthly_withdrawal_krw,
-            retirement_return_haircut_pct=request.retirement_return_haircut_pct,
-            retirement_fee_annual=request.retirement_fee_annual,
-        )
-        return run_engine_v0(engine_input)
+        return run_engine_v0(_build_engine_input(request))
     except FileNotFoundError as exc:
         if "returns_monthly.parquet" in str(exc):
             raise _missing_data_error([RETURNS_PATH]) from exc
@@ -107,3 +114,13 @@ def recommend(request: RecommendRequest) -> dict:
         raise HTTPException(status_code=500, detail={"message": str(exc)}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"message": str(exc)}) from exc
+
+
+@app.post("/report")
+def report(request: RecommendRequest) -> Response:
+    result = recommend(request)
+    payload = request.model_dump()
+    pdf_bytes = generate_report_pdf(payload, result)
+    filename = build_report_filename()
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

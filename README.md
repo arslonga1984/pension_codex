@@ -98,3 +98,18 @@ python -m packages.data.build_returns
 python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
 ```
 
+
+## PDF 리포트 생성
+
+- API: `POST /report` (요청 body는 `/recommend`와 동일)
+- 응답: `application/pdf` 바이너리
+- 웹 UI 결과 화면의 **PDF 리포트 다운로드** 버튼으로 호출 가능
+
+예시:
+
+```bash
+curl -X POST http://127.0.0.1:8000/report \
+  -H 'Content-Type: application/json' \
+  -d '{"current_balance_krw":10000000,"monthly_contribution_krw":500000,"start_date":"2026-01-01","retirement_date":"2040-01-01","target_cagr":6.0,"max_mdd":20.0}' \
+  --output retirement_report.pdf
+```
