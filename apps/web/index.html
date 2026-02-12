@@ -66,6 +66,18 @@
           <p id="report-status" class="status"></p>
         </article>
 
+        <article class="card hidden" id="alternatives-card">
+          <h2>대안 제안</h2>
+          <p class="muted">목표수익률 대비 허용 MDD 제약이 빡빡할 때, 아래 대안을 즉시 적용해 다시 계산합니다.</p>
+          <div class="alt-btns">
+            <button type="button" id="alt-contrib">월불입액 +10%</button>
+            <button type="button" id="alt-delay">개시시점 +2년 연기</button>
+            <button type="button" id="alt-mdd">허용MDD +5%p</button>
+          </div>
+          <div id="applied-badges" class="badges"></div>
+          <p id="alt-status" class="status"></p>
+        </article>
+
         <article class="card">
           <h2>경고 및 힌트</h2>
           <ul id="warnings-list" class="warnings-list"></ul>

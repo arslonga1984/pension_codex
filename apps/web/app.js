@@ -1,6 +1,7 @@
 const API_BASE = localStorage.getItem("pc_api_base") || "http://127.0.0.1:8000";
 const FORM_KEY = "pc_recommend_form";
 const RESULT_KEY = "pc_recommend_result";
+const ALT_KEY = "pc_alt_badges";
 
 const form = document.getElementById("recommend-form");
 const statusEl = document.getElementById("status");
@@ -8,6 +9,12 @@ const submitBtn = document.getElementById("submit-btn");
 const resultsEl = document.getElementById("results");
 const downloadBtn = document.getElementById("download-report-btn");
 const reportStatusEl = document.getElementById("report-status");
+const alternativesCard = document.getElementById("alternatives-card");
+const altStatusEl = document.getElementById("alt-status");
+const badgesEl = document.getElementById("applied-badges");
+const altContribBtn = document.getElementById("alt-contrib");
+const altDelayBtn = document.getElementById("alt-delay");
+const altMddBtn = document.getElementById("alt-mdd");
 
 function fmtKrw(value) {
   return new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 }).format(value || 0);
@@ -21,6 +28,11 @@ function setStatus(message, isError = false) {
 function setReportStatus(message, isError = false) {
   reportStatusEl.textContent = message;
   reportStatusEl.classList.toggle("error", isError);
+}
+
+function setAltStatus(message, isError = false) {
+  altStatusEl.textContent = message;
+  altStatusEl.classList.toggle("error", isError);
 }
 
 function updateWithdrawalModeUI() {
@@ -53,20 +65,58 @@ function serializeForm() {
   return payload;
 }
 
+function writeFormValues(patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    const el = form.elements.namedItem(key);
+    if (!el) continue;
+    if (el instanceof RadioNodeList) {
+      const target = form.querySelector(`input[name="${key}"][value="${value}"]`);
+      if (target) target.checked = true;
+    } else {
+      el.value = value;
+    }
+  }
+}
+
 function populateFromStorage() {
   const raw = localStorage.getItem(FORM_KEY);
   if (!raw) return;
-  const saved = JSON.parse(raw);
-  for (const [k, v] of Object.entries(saved)) {
-    const el = form.elements.namedItem(k);
-    if (!el || v == null) continue;
-    if (el instanceof RadioNodeList) {
-      const target = form.querySelector(`input[name="${k}"][value="${v}"]`);
-      if (target) target.checked = true;
-    } else {
-      el.value = v;
-    }
+  writeFormValues(JSON.parse(raw));
+}
+
+function loadAltBadges() {
+  try {
+    return JSON.parse(localStorage.getItem(ALT_KEY) || "[]");
+  } catch (_) {
+    return [];
   }
+}
+
+function saveAltBadges(items) {
+  localStorage.setItem(ALT_KEY, JSON.stringify(items));
+}
+
+function addAltBadge(text) {
+  const current = loadAltBadges();
+  current.push(text);
+  saveAltBadges(current);
+  renderAltBadges();
+}
+
+function renderAltBadges() {
+  badgesEl.innerHTML = "";
+  const badges = loadAltBadges();
+  badges.forEach((txt) => {
+    const span = document.createElement("span");
+    span.className = "badge";
+    span.textContent = txt;
+    badgesEl.appendChild(span);
+  });
+}
+
+function resetAltBadges() {
+  saveAltBadges([]);
+  renderAltBadges();
 }
 
 function drawLine(ctx, points, color) {
@@ -112,6 +162,13 @@ function renderChart(canvasId, seriesA, keyA, colorA, seriesB = null, keyB = nul
   }
 }
 
+function shouldShowAlternatives(warnings) {
+  return (warnings || []).some((w) => {
+    const t = String(w).toLowerCase();
+    return t.includes("max_mdd") || t.includes("constraint") || t.includes("mdd");
+  });
+}
+
 function renderWarnings(warnings) {
   const ul = document.getElementById("warnings-list");
   ul.innerHTML = "";
@@ -122,9 +179,12 @@ function renderWarnings(warnings) {
     if (w !== "경고 없음") {
       if (w.includes("depletes") || w.includes("소진")) li.textContent += " (힌트: 월 수령액을 낮추거나 목표 기간을 줄이세요)";
       if (w.includes("5%")) li.textContent += " (힌트: 목표 수령기간을 늘리거나 위험/수익 목표를 조정하세요)";
+      if (w.toLowerCase().includes("max_mdd")) li.textContent += " (힌트: 아래 대안 버튼으로 재계산해보세요)";
     }
     ul.appendChild(li);
   });
+
+  alternativesCard.classList.toggle("hidden", !shouldShowAlternatives(warnings));
 }
 
 function renderResult(result) {
@@ -167,7 +227,6 @@ async function callRecommend(payload) {
   return body;
 }
 
-
 async function downloadReport(payload) {
   const response = await fetch(`${API_BASE}/report`, {
     method: "POST",
@@ -196,25 +255,57 @@ async function downloadReport(payload) {
   window.URL.revokeObjectURL(url);
 }
 
+async function submitRecommend(payload, successMessage) {
+  const result = await callRecommend(payload);
+  localStorage.setItem(FORM_KEY, JSON.stringify(payload));
+  localStorage.setItem(RESULT_KEY, JSON.stringify(result));
+  renderResult(result);
+  setStatus(successMessage || "추천 결과를 불러왔습니다.");
+}
+
+async function applyAlternative(type) {
+  const payload = serializeForm();
+  const patch = {};
+
+  if (type === "contrib") {
+    const next = Math.round((Number(payload.monthly_contribution_krw || 0) * 1.1));
+    patch.monthly_contribution_krw = next;
+    addAltBadge(`월불입 +10% → ${fmtKrw(next)}`);
+  } else if (type === "delay") {
+    if (!payload.start_date) throw new Error("시작일이 필요합니다.");
+    const d = new Date(payload.start_date);
+    d.setFullYear(d.getFullYear() + 2);
+    const next = d.toISOString().slice(0, 10);
+    patch.start_date = next;
+    addAltBadge(`개시시점 +2년 → ${next}`);
+  } else if (type === "mdd") {
+    const next = Math.min(99.9, Number(payload.max_mdd || 0) + 5);
+    patch.max_mdd = Number(next.toFixed(1));
+    addAltBadge(`허용MDD +5%p → ${patch.max_mdd}%`);
+  }
+
+  writeFormValues(patch);
+  updateWithdrawalModeUI();
+  const nextPayload = serializeForm();
+  setAltStatus("대안 적용 후 재계산 중...");
+  await submitRecommend(nextPayload, "대안 적용 결과를 갱신했습니다.");
+  setAltStatus("대안 적용 완료");
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   setStatus("요청 중...");
   submitBtn.disabled = true;
-
   try {
+    resetAltBadges();
     const payload = serializeForm();
-    localStorage.setItem(FORM_KEY, JSON.stringify(payload));
-    const result = await callRecommend(payload);
-    localStorage.setItem(RESULT_KEY, JSON.stringify(result));
-    renderResult(result);
-    setStatus("추천 결과를 불러왔습니다.");
+    await submitRecommend(payload, "추천 결과를 불러왔습니다.");
   } catch (error) {
     setStatus(error.message, true);
   } finally {
     submitBtn.disabled = false;
   }
 });
-
 
 downloadBtn.addEventListener("click", async () => {
   setReportStatus("PDF 생성 중...");
@@ -230,8 +321,19 @@ downloadBtn.addEventListener("click", async () => {
   }
 });
 
+altContribBtn.addEventListener("click", async () => {
+  try { await applyAlternative("contrib"); } catch (error) { setAltStatus(error.message, true); }
+});
+altDelayBtn.addEventListener("click", async () => {
+  try { await applyAlternative("delay"); } catch (error) { setAltStatus(error.message, true); }
+});
+altMddBtn.addEventListener("click", async () => {
+  try { await applyAlternative("mdd"); } catch (error) { setAltStatus(error.message, true); }
+});
+
 form.querySelectorAll('input[name="withdrawal_mode"]').forEach((el) => el.addEventListener("change", updateWithdrawalModeUI));
 populateFromStorage();
+renderAltBadges();
 updateWithdrawalModeUI();
 const cachedResult = localStorage.getItem(RESULT_KEY);
 if (cachedResult) {
